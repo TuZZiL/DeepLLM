@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepLLM Chat</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="chat-container">
+            <div class="header">
+                <h1>DeepSeek R1</h1>
+                <button class="theme-toggle">🌓</button>
+            </div>
+            <div class="messages" id="messages"></div>
+            <div class="input-area">
+                <div class="typing-indicator" id="typingIndicator"></div>
+                <div class="input-container">
+                    <button id="toggleParams" class="toggle-params-button">⚙️</button>
+                    <textarea
+                        id="messageInput"
+                        placeholder="Type your message..."
+                        rows="1"
+                    ></textarea>
+                    <button id="sendButton">➤</button>
+                </div>
+            </div>
+        </div>
+        <div class="params-sidebar" id="paramsSidebar">
+            <div class="params-header">
+                <h3>Parameters</h3>
+            </div>
+            <div class="params-container">
+
+                <div class="param-section">
+                    <div class="param-header">
+                        <label for="systemPrompt">System Prompt</label>
+                        <span class="info-icon">?</span>
+                    </div>
+                    <div class="param-controls">
+                        <textarea id="systemPrompt" rows="4" placeholder="Enter system prompt..."></textarea>
+                    </div>
+                </div>
+
+                <div class="param-section">
+                    <div class="param-header">
+                        <label for="temperature">Temperature</label>
+                        <span class="info-icon">?</span>
+                    </div>
+                    <div class="param-controls">
+                        <input type="range" id="temperature" min="0" max="1" step="0.01" value="0.6">
+                        <input type="number" id="temperatureValue" min="0" max="1" step="0.01" value="0.6">
+                    </div>
+                </div>
+
+                <div class="param-section">
+                    <div class="param-header">
+                        <label for="top_p">Top P</label>
+                        <span class="info-icon">?</span>
+                    </div>
+                    <div class="param-controls">
+                        <input type="range" id="top_p" min="0.01" max="1" step="0.01" value="0.7">
+                        <input type="number" id="topPValue" min="0.01" max="1" step="0.01" value="0.7">
+                    </div>
+                </div>
+
+                <div class="param-section">
+                    <div class="param-header">
+                        <label for="frequency_penalty">Frequency Penalty</label>
+                        <span class="info-icon">?</span>
+                    </div>
+                    <div class="param-controls">
+                        <input type="range" id="frequency_penalty" min="-2" max="2" step="0.01" value="0">
+                        <input type="number" id="frequencyPenaltyValue" min="-2" max="2" step="0.01" value="0">
+                    </div>
+                </div>
+
+                <div class="param-section">
+                    <div class="param-header">
+                        <label for="presence_penalty">Presence Penalty</label>
+                        <span class="info-icon">?</span>
+                    </div>
+                    <div class="param-controls">
+                        <input type="range" id="presence_penalty" min="-2" max="2" step="0.01" value="0">
+                        <input type="number" id="presencePenaltyValue" min="-2" max="2" step="0.01" value="0">
+                    </div>
+                </div>
+
+                <div class="param-section">
+                    <div class="param-header">
+                        <label for="max_tokens">Max Tokens</label>
+                        <span class="info-icon">?</span>
+                    </div>
+                    <div class="param-controls">
+                        <input type="range" id="max_tokens" min="1" max="4096" step="1" value="4096">
+                        <input type="number" id="maxTokensValue" min="1" max="4096" step="1" value="4096">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="errorToast" class="toast"></div>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
