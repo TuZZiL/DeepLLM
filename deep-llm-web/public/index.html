@@ -13,7 +13,19 @@
                 <h1>DeepSeek R1</h1>
                 <button class="theme-toggle">🌓</button>
             </div>
-            <div class="messages" id="messages"></div>
+    <div class="messages" id="messages">
+        <template id="messageTemplate">
+            <div class="message">
+                <div class="reasoning-header">
+                    <button class="reasoning-toggle">View Reasoning</button>
+                </div>
+                <div class="reasoning-container collapsed">
+                    <div class="reasoning-content"></div>
+                </div>
+                <div class="message-content"></div>
+            </div>
+        </template>
+    </div>
             <div class="input-area">
                 <div class="typing-indicator" id="typingIndicator"></div>
                 <div class="input-container">

@@ -102,7 +102,7 @@ body {
 .input-container {
     display: flex;
     gap: 0.5rem;
-    align-items: flex-end;
+    align-items: center;
 }
 
 textarea {
@@ -348,4 +348,51 @@ button:hover {
     to {
         transform: translateX(0);
     }
+}
+
+/* Styles for reasoning section */
+.reasoning-header {
+    cursor: pointer;
+    margin-bottom: 0px;
+    display: flex;
+    align-items: center;
+}
+
+.reasoning-toggle {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    padding: 0;
+    font: inherit;
+    outline: none;
+}
+
+/* Style for the reasoning toggle icon */
+.reasoning-toggle::before {
+    content: '▶';
+    display: inline-block;
+    margin-right: 6px;
+    transition: transform 0.2s ease;
+    font-size: 0.8em;
+}
+
+/* Rotate icon when reasoning container is expanded */
+.reasoning-container:not(.collapsed) + .reasoning-header .reasoning-toggle::before {
+    transform: rotate(90deg);
+}
+
+.reasoning-container {
+    padding: 0px 1rem 0.5rem 1rem;
+    font-style: italic;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    margin-top: 0px;
+}
+
+.reasoning-container.collapsed {
+    display: none;
+}
+
+.reasoning-content {
+    font-style: italic;
 }

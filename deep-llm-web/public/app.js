@@ -1,4 +1,5 @@
 const messagesContainer = document.getElementById('messages');
+const messageTemplate = document.getElementById('messageTemplate');
 const messageInput = document.getElementById('messageInput');
 const sendButton = document.getElementById('sendButton');
 const themeToggle = document.querySelector('.theme-toggle');
@@ -16,21 +17,41 @@ function setTheme(theme) {
 }
 
 function loadTheme() {
-    const savedTheme = localStorage.getItem('theme') || 
+    const savedTheme = localStorage.getItem('theme') ||
         (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
     setTheme(savedTheme);
 }
 
-// Message handling
+// Message handling.  This function is only for user messages now.
 function addMessage(content, isUser = false) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${isUser ? 'user' : 'ai'}`;
+    // Clone the template
+    const messageDiv = messageTemplate.content.cloneNode(true).querySelector('.message');
+
+    // Add user/ai class
+    messageDiv.classList.add(isUser ? 'user' : 'ai');
+
+    if (isUser) {
+        messageDiv.querySelector('.reasoning-header').style.display = 'none';
+    }
+
+    // Get content elements
+    const messageContent = messageDiv.querySelector('.message-content');
+    const reasoningContainer = messageDiv.querySelector('.reasoning-container');
+    const reasoningContent = reasoningContainer.querySelector('.reasoning-content');
+    const reasoningToggle = messageDiv.querySelector('.reasoning-toggle');
+
+    // Add event listener to toggle button
+    reasoningToggle.addEventListener('click', () => {
+        reasoningContainer.classList.toggle('collapsed');
+    });
+
     try {
-        messageDiv.innerHTML = marked.parse(content);
+        messageContent.innerHTML = marked.parse(content);
     } catch (e) {
-        messageDiv.textContent = content;
+        messageContent.textContent = content;
         console.error('Markdown parsing error:', e);
     }
+
     messagesContainer.appendChild(messageDiv);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
@@ -40,8 +61,8 @@ async function sendMessage() {
 
     const userMessage = messageInput.value;
     messageInput.value = '';
-    addMessage(userMessage, true);
-    
+    addMessage(userMessage, true); // Add the user message immediately
+
     try {
         isStreaming = true;
         typingIndicator.classList.add('active');
@@ -50,7 +71,6 @@ async function sendMessage() {
         const messages = [{ role: 'user', content: userMessage }];
         messages.unshift({ role: 'system', content: systemPrompt });
 
-        let aiResponse = '';
         const params = getParameterValues();
         const urlParams = new URLSearchParams({
             messages: JSON.stringify(messages),
@@ -63,14 +83,63 @@ async function sendMessage() {
 
         const eventSource = new EventSource(`/api/chat?${urlParams.toString()}`);
 
+        let currentReasoning = ''; // Accumulate reasoning parts
+        let currentMessage = '';  // Accumulate message parts
+        let messageDiv = null;    // The current message <div> element
+
         eventSource.onmessage = (event) => {
             const { content } = JSON.parse(event.data);
-            aiResponse += content;
-            
-            if (!messagesContainer.lastElementChild || !messagesContainer.lastElementChild.classList.contains('ai')) {
-                addMessage(aiResponse);
-            } else {
-                messagesContainer.lastElementChild.innerHTML = marked.parse(aiResponse);
+
+            // Find the last occurrence of </think> to handle reasoning
+            const reasoningEnd = content.lastIndexOf('</think>');
+
+            let reasoningPart = '';
+            let messagePart = content;
+
+            if (reasoningEnd !== -1) {
+                // Split the content into reasoning and message parts
+                reasoningPart = content.substring(0, reasoningEnd);
+                messagePart = content.substring(reasoningEnd + 8); // Length of "</think>" is 8
+
+                // Extract reasoning text (remove leading \n)
+                const reasoningStart = reasoningPart.indexOf('\n');
+                if (reasoningStart !== -1) {
+                    reasoningPart = reasoningPart.substring(reasoningStart + 1);
+                }
+            }
+
+            currentReasoning += reasoningPart;
+            currentMessage += messagePart;
+
+            if (!messageDiv) {
+                // Clone the template for the *first* AI message part
+                messageDiv = messageTemplate.content.cloneNode(true).querySelector('.message');
+                messageDiv.classList.add('ai');
+                const messageContentEl = messageDiv.querySelector('.message-content');
+                const reasoningContainerEl = messageDiv.querySelector('.reasoning-container');
+                const reasoningContentEl = reasoningContainerEl.querySelector('.reasoning-content');
+                const reasoningToggle = messageDiv.querySelector('.reasoning-toggle');
+
+                // Add event listener to toggle button
+                reasoningToggle.addEventListener('click', () => {
+                    reasoningContainerEl.classList.toggle('collapsed');
+                });
+                messagesContainer.appendChild(messageDiv);
+            }
+
+            // Update the content of existing elements
+            const messageContentEl = messageDiv.querySelector('.message-content');
+            const reasoningContainerEl = messageDiv.querySelector('.reasoning-container');
+            const reasoningContentEl = reasoningContainerEl.querySelector('.reasoning-content');
+            messageContentEl.innerHTML = marked.parse(currentMessage);
+            reasoningContentEl.innerHTML = marked.parse(currentReasoning);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight; // Ensure scroll to bottom
+
+            if (content.includes('</think>')) {
+                // Reset for the next message
+                currentReasoning = '';
+                currentMessage = '';
+                messageDiv = null;
             }
         };
 
