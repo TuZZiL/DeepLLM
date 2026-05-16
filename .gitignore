@@ -39,3 +39,12 @@ build/
 *.rar
 *.zip
 *.7z
+
+# OpenClaw skill local runtime artifacts
+openclaw-skills/**/storage_state.json
+openclaw-skills/**/cookies.json
+openclaw-skills/**/downloads/
+openclaw-skills/**/*.sqlite
+openclaw-skills/**/.env
+openclaw-skills/**/__pycache__/
+openclaw-skills/**/*.pyc
