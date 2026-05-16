@@ -6,7 +6,9 @@ These scripts target authorized, rate-limited automation against XenForo-like fo
 
 ## Expected patterns
 
-- Login/session access is represented by cookies saved in Playwright `storage_state.json`.
+- Public/direct HTTP is the default path. Many XenForo thread and attachment URLs can return `200` without `storage_state.json`.
+- Login/session access is optional and represented by cookies saved in Playwright `storage_state.json`; use it only when a page actually requires authentication.
+- Thread URLs normally follow XenForo-style `/threads/<slug>.<id>/`; older `/phpBB2/` prefixes can still appear as legacy routing aliases, not proof that the site is phpBB.
 - Thread URLs may paginate with `/page-N`, `page=N`, or links containing `page-`.
 - Media candidates can appear in:
   - attachment links containing `/attachments/`
@@ -29,8 +31,9 @@ Stop rather than retry aggressively when responses indicate:
 
 When changing endpoint or parser logic:
 
-1. Keep `--dry-run` as the default for commands that can discover many resources.
-2. Preserve `--max-pages`, `--max-media`, and `--delay` limits.
-3. Keep JSON output stable: `ok`, `status`, `url`, `items`/`media`, `errors`.
-4. Do not add credential logging.
-5. Do not add CAPTCHA, anti-bot, paywall, or permission bypass logic.
+1. Keep public/direct HTTP as the default; require `--require-auth` only for authenticated-only pages.
+2. Keep `--dry-run` as the default for commands that can discover many resources.
+3. Preserve `--max-pages`, `--max-media`, and `--delay` limits.
+4. Keep JSON output stable: `ok`, `status`, `url`, `items`/`media`, `errors`.
+5. Do not add credential logging.
+6. Do not add CAPTCHA, anti-bot, paywall, or permission bypass logic.

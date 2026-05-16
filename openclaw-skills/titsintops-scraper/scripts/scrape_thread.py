@@ -20,7 +20,7 @@ def main() -> int:
     parser.add_argument("--no-dry-run", action="store_true", help="Actually download media; default is dry-run")
     add_common_args(parser)
     args = parser.parse_args()
-    inspection = inspect_thread(args.url, max_pages=args.max_pages, storage_state=args.storage_state, allow_external=args.allow_external)
+    inspection = inspect_thread(args.url, max_pages=args.max_pages, storage_state=args.storage_state, allow_external=args.allow_external, require_auth=args.require_auth)
     payload = {"inspection": inspection.to_jsonable(), "download": None}
     if inspection.ok:
         payload["download"] = download_media(
@@ -30,6 +30,7 @@ def main() -> int:
             delay=args.delay,
             storage_state=args.storage_state,
             referer=args.url,
+            require_auth=args.require_auth,
             dry_run=not args.no_dry_run,
         )
     print_json(payload)

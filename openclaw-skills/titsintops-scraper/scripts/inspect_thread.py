@@ -15,7 +15,7 @@ def main() -> int:
     parser.add_argument("--max-pages", type=int, default=1, help="Maximum thread pages to inspect")
     add_common_args(parser)
     args = parser.parse_args()
-    inspection = inspect_thread(args.url, max_pages=args.max_pages, storage_state=args.storage_state, allow_external=args.allow_external)
+    inspection = inspect_thread(args.url, max_pages=args.max_pages, storage_state=args.storage_state, allow_external=args.allow_external, require_auth=args.require_auth)
     print_json(inspection.to_jsonable())
     return 0 if inspection.ok else 2
 

@@ -1,6 +1,6 @@
 ---
 name: titsintops-scraper
-description: Controlled OpenClaw/Codex skill for building and running authorized TitsInTops/XenForo forum automation. Use when the agent needs to manage login sessions, check authenticated access, search topics by title or tag, inspect XenForo thread pages, extract media URLs, or perform dry-run/strictly bounded rate-limited downloads for content the user is permitted to access.
+description: Controlled OpenClaw/Codex skill for building and running authorized TitsInTops/XenForo forum automation. Use when the agent needs to check public or authenticated access, search topics by title or tag, inspect XenForo thread pages, extract media URLs, optionally manage login sessions, or perform dry-run/strictly bounded rate-limited downloads for content the user is permitted to access.
 ---
 
 # TitsInTops Scraper
@@ -14,8 +14,11 @@ Default to inspection and `--dry-run`. Ask for explicit user confirmation before
 ## Setup
 
 1. Create a virtualenv outside the skill folder or in an ignored location.
-2. Install dependencies from `scripts/requirements.txt`.
-3. Set secrets through environment variables or a local `.env` that is not committed:
+2. Install Python dependencies from `scripts/requirements.txt`. For public HTTP inspection, `httpx` and `beautifulsoup4` are the important packages.
+3. Install Playwright browser/system dependencies only if you need `login.py`:
+   - `playwright install chromium`
+   - On clean Ubuntu/server images: `playwright install-deps chromium`
+4. Set secrets through environment variables or a local `.env` that is not committed, only if login is needed:
    - `TITSINTOPS_BASE_URL` defaults to `https://titsintops.com`
    - `TITSINTOPS_USERNAME` and `TITSINTOPS_PASSWORD` are optional for assisted login; manual login is preferred
    - `TITSINTOPS_STORAGE_STATE` defaults to `./storage_state.json`
@@ -23,27 +26,34 @@ Default to inspection and `--dry-run`. Ask for explicit user confirmation before
 
 ## Workflow
 
-Run commands from this skill directory unless passing absolute paths.
+Run commands from this skill directory unless passing absolute paths. Default to public/direct HTTP first; login is optional and only required for pages that actually return login-required/blocked status.
 
 1. Validate local setup:
    ```bash
    python scripts/check_env.py
    ```
-2. Create or refresh an authenticated browser session:
-   ```bash
-   python scripts/login.py --manual
-   ```
-3. Verify access without downloading anything:
+2. Verify public/direct HTTP access without downloading anything:
    ```bash
    python scripts/check_session.py
    ```
-4. Search or inspect:
+3. Search or inspect with public HTTP:
    ```bash
    python scripts/search_title.py "example topic" --json
    python scripts/search_tag.py "example-tag" --json
    python scripts/inspect_thread.py "https://titsintops.com/..." --max-pages 2 --json
    ```
-5. Download only after user confirmation, with strict bounds:
+4. If a specific page really requires login, create/refresh a browser session and then rerun commands with `--require-auth`:
+   ```bash
+   python scripts/login.py --manual
+   python scripts/check_session.py "https://titsintops.com/..." --require-auth
+   ```
+5. Search or inspect with a required saved session:
+   ```bash
+   python scripts/search_title.py "example topic" --json --require-auth
+   python scripts/search_tag.py "example-tag" --json --require-auth
+   python scripts/inspect_thread.py "https://titsintops.com/..." --max-pages 2 --json --require-auth
+   ```
+6. Download only after user confirmation, with strict bounds. Omit `--require-auth` for public media; add it only for authenticated-only pages:
    ```bash
    python scripts/scrape_thread.py "https://titsintops.com/..." --max-pages 2 --max-media 20 --delay 3 --no-dry-run
    ```
@@ -60,8 +70,8 @@ Run commands from this skill directory unless passing absolute paths.
 ## Script guide
 
 - `check_env.py`: validates Python version, optional dependencies, path configuration, and ignored-secret hygiene.
-- `login.py`: uses Playwright to perform manual or environment-assisted login and writes Playwright `storage_state` for later scripts.
-- `check_session.py`: loads the saved session and detects whether a URL appears authenticated, blocked, challenged, or redirected to login.
+- `login.py`: optional Playwright helper for manual or environment-assisted login; requires Chromium/browser dependencies and writes Playwright `storage_state` for authenticated-only pages.
+- `check_session.py`: checks public/direct HTTP by default, optionally loads saved cookies, and detects whether a URL appears blocked, challenged, or redirected to login.
 - `search_title.py`: performs a conservative XenForo-style title search and emits normalized JSON results.
 - `search_tag.py`: fetches a XenForo-style tag page and emits normalized JSON results.
 - `inspect_thread.py`: inspects bounded thread pages, extracts thread metadata and media candidates, but does not download.
