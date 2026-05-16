@@ -24,6 +24,12 @@ def main() -> int:
         "storage_state_exists": DEFAULT_STORAGE_STATE.exists(),
         "download_dir": str(DEFAULT_DOWNLOAD_DIR),
         "dependencies": dependency_status,
+        "dependency_notes": {
+            "required_for_public_http": ["httpx", "beautifulsoup4"],
+            "optional_for_login_browser": ["playwright", "python-dotenv"],
+            "playwright_browser_install": "playwright install chromium",
+            "ubuntu_system_dependencies": "playwright install-deps chromium",
+        },
         "secret_hygiene": {
             "env_username_set": bool(os.getenv("TITSINTOPS_USERNAME")),
             "env_password_set": bool(os.getenv("TITSINTOPS_PASSWORD")),
@@ -32,7 +38,8 @@ def main() -> int:
     }
     print_json(payload)
     if not payload["ok"]:
-        print("Install dependencies with: pip install -r scripts/requirements.txt", file=sys.stderr)
+        print("Install Python dependencies with: pip install -r scripts/requirements.txt", file=sys.stderr)
+        print("For login.py on clean Ubuntu also run: playwright install chromium && playwright install-deps chromium", file=sys.stderr)
         return 1
     return 0
 

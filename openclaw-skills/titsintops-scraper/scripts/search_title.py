@@ -10,7 +10,7 @@ def main() -> int:
     parser.add_argument("query", help="Search query")
     add_common_args(parser)
     args = parser.parse_args()
-    payload = bounded_search(search_url_for_query(args.query), args.storage_state, args.allow_external)
+    payload = bounded_search(search_url_for_query(args.query), args.storage_state, args.allow_external, args.require_auth)
     payload["query"] = args.query
     print_json(payload)
     return 0 if payload["ok"] else 2

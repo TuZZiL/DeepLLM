@@ -10,7 +10,7 @@ def main() -> int:
     parser.add_argument("tag", help="Tag name or slug")
     add_common_args(parser)
     args = parser.parse_args()
-    payload = bounded_search(tag_url_for_tag(args.tag), args.storage_state, args.allow_external)
+    payload = bounded_search(tag_url_for_tag(args.tag), args.storage_state, args.allow_external, args.require_auth)
     payload["tag"] = args.tag
     print_json(payload)
     return 0 if payload["ok"] else 2

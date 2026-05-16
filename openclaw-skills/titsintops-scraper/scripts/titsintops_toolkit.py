@@ -3,9 +3,10 @@
 
 Agent orientation:
 - CLI entrypoints are intentionally thin wrappers around this module.
-- The safe path is: login.py -> check_session.py -> search/inspect -> scrape_thread.py.
-- The module never stores credentials; it only reads cookies from Playwright
-  ``storage_state.json`` produced by login.py.
+- The default safe path is public HTTP: check_session.py -> search/inspect -> scrape_thread.py.
+- login.py is optional and only needed when a page actually requires a user session.
+- The module never stores credentials; when ``storage_state.json`` exists it only
+  reuses Playwright cookies produced by login.py.
 - Parser functions are deliberately generic because XenForo templates and old
   phpBB-style routes can vary between forums.
 """
@@ -123,31 +124,47 @@ def sanitize_slug(value: str, fallback: str = "item") -> str:
     return value[:120] or fallback
 
 
-def load_storage_state(path: Path = DEFAULT_STORAGE_STATE) -> dict[str, Any]:
-    """Read Playwright storage_state JSON created by login.py."""
+def load_storage_state(path: Path = DEFAULT_STORAGE_STATE, require_auth: bool = False) -> dict[str, Any]:
+    """Read Playwright storage_state JSON created by login.py when present.
+
+    Public TitsInTops/XenForo pages can often be fetched without cookies. Missing
+    session state is therefore not fatal unless the caller explicitly asks for
+    ``require_auth``.
+    """
     if not path.exists():
-        raise SystemExit(f"Session state not found: {path}. Run login.py first.")
+        if require_auth:
+            raise SystemExit(f"Session state not found: {path}. Run login.py first or omit --require-auth.")
+        return {"cookies": []}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def cookies_from_storage_state(path: Path = DEFAULT_STORAGE_STATE) -> dict[str, str]:
-    """Convert Playwright cookies into the simple dict httpx expects."""
-    state = load_storage_state(path)
+def cookies_from_storage_state(path: Path = DEFAULT_STORAGE_STATE, require_auth: bool = False) -> dict[str, str]:
+    """Convert optional Playwright cookies into the simple dict httpx expects."""
+    state = load_storage_state(path, require_auth=require_auth)
     cookies: dict[str, str] = {}
     for cookie in state.get("cookies", []):
         name = cookie.get("name")
         value = cookie.get("value")
         if name and value is not None:
             cookies[str(name)] = str(value)
-    if not cookies:
-        raise SystemExit(f"No cookies found in {path}. Refresh login state.")
+    if require_auth and not cookies:
+        raise SystemExit(f"No cookies found in {path}. Refresh login state or omit --require-auth.")
     return cookies
 
 
-def make_http_client(storage_state: Path = DEFAULT_STORAGE_STATE, timeout: float = 30.0) -> Any:
-    """Create an authenticated httpx client from saved browser cookies."""
+def make_http_client(
+    storage_state: Path = DEFAULT_STORAGE_STATE,
+    timeout: float = 30.0,
+    require_auth: bool = False,
+) -> Any:
+    """Create an httpx client, adding saved browser cookies only if available.
+
+    Anonymous/public HTTP is the default because real-world checks showed many
+    forum and attachment URLs are publicly reachable. Use ``require_auth=True``
+    only for pages that genuinely need a saved session.
+    """
     httpx = import_dependency("httpx", "Install dependencies: pip install -r scripts/requirements.txt")
-    cookies = cookies_from_storage_state(storage_state)
+    cookies = cookies_from_storage_state(storage_state, require_auth=require_auth)
     return httpx.Client(
         follow_redirects=True,
         timeout=timeout,
@@ -317,6 +334,7 @@ def inspect_thread(
     max_pages: int = 1,
     storage_state: Path = DEFAULT_STORAGE_STATE,
     allow_external: bool = False,
+    require_auth: bool = False,
 ) -> ThreadInspection:
     """Inspect up to ``max_pages`` pages and return metadata/media candidates."""
     if max_pages < 1:
@@ -325,7 +343,7 @@ def inspect_thread(
     if not allowed_host(start_url, allow_external=allow_external):
         raise SystemExit(f"Refusing URL outside allowed host: {start_url}")
     inspection = ThreadInspection(ok=False, status="not_started", url=start_url, pages_requested=max_pages)
-    with make_http_client(storage_state) as client:
+    with make_http_client(storage_state, require_auth=require_auth) as client:
         # Fetch page 1 first because it contains the title and visible pagination.
         first = client.get(start_url, headers={"Referer": BASE_URL + "/"})
         ok, status = classify_response(first)
@@ -364,12 +382,12 @@ def tag_url_for_tag(tag: str, base_url: str = BASE_URL) -> str:
     return f"{base_url}/tags/{cleaned}/"
 
 
-def bounded_search(url: str, storage_state: Path, allow_external: bool = False) -> dict[str, Any]:
+def bounded_search(url: str, storage_state: Path, allow_external: bool = False, require_auth: bool = False) -> dict[str, Any]:
     """Fetch one search/tag page and return normalized thread-like links."""
     target = normalize_url(url, BASE_URL)
     if not allowed_host(target, allow_external=allow_external):
         raise SystemExit(f"Refusing URL outside allowed host: {target}")
-    with make_http_client(storage_state) as client:
+    with make_http_client(storage_state, require_auth=require_auth) as client:
         response = client.get(target, headers={"Referer": BASE_URL + "/"})
         ok, status = classify_response(response)
         payload = {"ok": ok, "status": status, "url": str(response.url), "items": []}
@@ -385,6 +403,7 @@ def download_media(
     delay: float = 3.0,
     storage_state: Path = DEFAULT_STORAGE_STATE,
     referer: str = BASE_URL,
+    require_auth: bool = False,
     dry_run: bool = True,
 ) -> dict[str, Any]:
     """Download a bounded media list, or return a manifest in dry-run mode."""
@@ -399,7 +418,7 @@ def download_media(
         manifest["items"] = [asdict(item) | {"downloaded": False} for item in selected]
         return manifest
     httpx = import_dependency("httpx", "Install dependencies: pip install -r scripts/requirements.txt")
-    with make_http_client(storage_state, timeout=60.0) as client:
+    with make_http_client(storage_state, timeout=60.0, require_auth=require_auth) as client:
         for index, item in enumerate(selected, start=1):
             if index > 1 and delay > 0:
                 time.sleep(delay)
@@ -463,7 +482,8 @@ def extension_from_response(url: str, content_type: str) -> str:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--storage-state", type=Path, default=DEFAULT_STORAGE_STATE, help="Path to Playwright storage_state JSON")
+    parser.add_argument("--storage-state", type=Path, default=DEFAULT_STORAGE_STATE, help="Optional Playwright storage_state JSON; public HTTP is used when missing")
+    parser.add_argument("--require-auth", action="store_true", help="Fail if --storage-state is missing or has no cookies")
     parser.add_argument("--allow-external", action="store_true", help="Allow parsing external media hosts; default is same host only")
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
 
