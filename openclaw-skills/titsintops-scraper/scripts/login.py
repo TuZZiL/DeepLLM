@@ -20,7 +20,6 @@ async def fill_first_visible(page, selectors: list[str], value: str, label: str,
         try:
             await locator.wait_for(state="visible", timeout=timeout_ms)
             await locator.fill(value)
-            print(f"Filled {label} using selector: {selector}")
             return True
         except Exception:
             continue
