@@ -36,28 +36,39 @@ Run commands from this skill directory unless passing absolute paths. Default to
    ```bash
    python scripts/check_session.py
    ```
-3. Search or inspect with public HTTP:
+3. Search or inspect with public HTTP. Add `--resolve-full --full-method static` to upgrade previews when the thread HTML already exposes parent attachment links or larger `srcset` entries:
    ```bash
    python scripts/search_title.py "example topic" --json
    python scripts/search_tag.py "example-tag" --json
-   python scripts/inspect_thread.py "https://titsintops.com/..." --max-pages 2 --json
+   python scripts/inspect_thread.py "https://titsintops.com/..." --max-pages 2 --resolve-full --full-method static --json
    ```
-4. If a specific page really requires login, create/refresh a browser session and then rerun commands with `--require-auth`:
+4. If full-size images require login/click, create/refresh a browser session and then rerun full-size resolution with `--require-auth`:
    ```bash
    python scripts/login.py --manual
    python scripts/check_session.py "https://titsintops.com/..." --require-auth
    ```
-5. Search or inspect with a required saved session:
+5. Inspect full-size candidates with a required saved session. Prefer `http` first; use `browser` only when full-size URLs appear after a legitimate authenticated click/lightbox:
    ```bash
-   python scripts/search_title.py "example topic" --json --require-auth
-   python scripts/search_tag.py "example-tag" --json --require-auth
-   python scripts/inspect_thread.py "https://titsintops.com/..." --max-pages 2 --json --require-auth
+   python scripts/inspect_thread.py "https://titsintops.com/..." --max-pages 2 --resolve-full --full-method http --json --require-auth
+   python scripts/inspect_thread.py "https://titsintops.com/..." --max-pages 2 --resolve-full --full-method browser --json --require-auth
    ```
-6. Download only after user confirmation, with strict bounds. Omit `--require-auth` for public media; add it only for authenticated-only pages:
+6. Download only after reviewing dry-run JSON and receiving user confirmation. Omit `--require-auth` for public media; add it only for authenticated-only full-size pages:
    ```bash
-   python scripts/scrape_thread.py "https://titsintops.com/..." --max-pages 2 --max-media 20 --delay 3 --no-dry-run
+   python scripts/scrape_thread.py "https://titsintops.com/..." --max-pages 2 --max-media 20 --resolve-full --full-method browser --require-auth --delay 3
+   python scripts/scrape_thread.py "https://titsintops.com/..." --max-pages 2 --max-media 20 --resolve-full --full-method browser --require-auth --delay 3 --no-dry-run
    ```
 
+
+
+## Full-size image resolution
+
+Use full-size resolution when public thread HTML exposes only thumbnails/previews. The skill supports three bounded resolver modes:
+
+- `static`: no extra requests beyond the thread page; upgrades previews using parent attachment links, `srcset`, and lazy-image attributes already present in HTML.
+- `http`: requests attachment/lightbox URLs with `httpx` and optional saved cookies, then accepts direct `image/*` responses or parses attachment HTML for full image URLs.
+- `browser`: authenticated Playwright fallback for the click/lightbox case. It opens the saved session, clicks the preview image, and records a full-size image URL if one appears in the page/lightbox. It does not solve CAPTCHA or bypass access controls.
+
+Recommended escalation path: `static` -> `http --require-auth` -> `browser --require-auth`. Keep `--max-pages`, `--max-media`, and dry-run defaults while reviewing `preview_url`, `full_url`, `resolution_status`, and `resolution_method` in JSON.
 
 ## Code orientation for agents
 
@@ -74,7 +85,7 @@ Run commands from this skill directory unless passing absolute paths. Default to
 - `check_session.py`: checks public/direct HTTP by default, optionally loads saved cookies, and detects whether a URL appears blocked, challenged, or redirected to login.
 - `search_title.py`: performs a conservative XenForo-style title search and emits normalized JSON results.
 - `search_tag.py`: fetches a XenForo-style tag page and emits normalized JSON results.
-- `inspect_thread.py`: inspects bounded thread pages, extracts thread metadata and media candidates, but does not download.
-- `scrape_thread.py`: reuses the inspector and downloads bounded media with delay, hashing, manifest output, and stop-on-error behavior.
+- `inspect_thread.py`: inspects bounded thread pages, extracts thread metadata/media candidates, and can resolve full-size URLs with `--resolve-full`, but does not download.
+- `scrape_thread.py`: reuses the inspector, optionally resolves full-size URLs, and downloads bounded media with delay, hashing, manifest output, and stop-on-error behavior.
 
 For implementation assumptions and expected site patterns, read `references/xenforo_workflow.md` only when changing parsers or endpoints.

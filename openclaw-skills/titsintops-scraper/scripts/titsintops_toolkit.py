@@ -59,6 +59,12 @@ class MediaCandidate:
     source_page: str
     post_id: str | None = None
     text: str | None = None
+    preview_url: str | None = None
+    full_url: str | None = None
+    resolution_status: str = "unresolved"
+    resolution_method: str | None = None
+    requires_auth: bool = False
+    alternates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +81,7 @@ class ThreadInspection:
     pages_seen: list[str] = field(default_factory=list)
     media: list[MediaCandidate] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    resolution_report: dict[str, Any] = field(default_factory=dict)
 
     def to_jsonable(self) -> dict[str, Any]:
         data = asdict(self)
@@ -274,6 +281,59 @@ def strip_fragment(url: str) -> str:
     return urlunparse(parsed._replace(fragment=""))
 
 
+def media_path(url: str) -> str:
+    """Return lower-case URL path for media/thumbnail heuristics."""
+    return urlparse(url).path.lower()
+
+
+def is_media_url(url: str) -> bool:
+    """Return whether a URL looks like a direct media or XenForo attachment URL."""
+    path = media_path(url)
+    return "/attachments/" in path or path.endswith(MEDIA_EXTENSIONS)
+
+
+def is_probable_thumbnail_url(url: str) -> bool:
+    """Detect common preview/thumbnail URL patterns without site-specific crawling."""
+    path = media_path(url)
+    filename = Path(path).name
+    return any(marker in path for marker in ["thumb", "thumbnail", "/small/", "/medium/", "/proxy.php"]) or bool(
+        re.search(r"(?:^|[-_])(\d{2,4})x(\d{2,4})(?:[-_.]|$)", filename)
+    )
+
+
+def srcset_candidates(srcset: str | None, page_url: str) -> list[str]:
+    """Parse srcset into URLs, sorted from smallest to largest descriptor."""
+    if not srcset:
+        return []
+    parsed: list[tuple[float, str]] = []
+    for part in srcset.split(","):
+        bits = part.strip().split()
+        if not bits:
+            continue
+        url = strip_fragment(normalize_url(bits[0], page_url))
+        score = 1.0
+        if len(bits) > 1:
+            descriptor = bits[1].strip().lower()
+            try:
+                if descriptor.endswith("w"):
+                    score = float(descriptor[:-1] or 0)
+                elif descriptor.endswith("x"):
+                    score = float(descriptor[:-1] or 0) * 1000
+            except ValueError:
+                score = 1.0
+        parsed.append((score, url))
+    return [url for _, url in sorted(parsed, key=lambda item: item[0])]
+
+
+def first_present_url(values: list[str | None], page_url: str) -> str | None:
+    """Normalize and return the first usable URL-like attribute value."""
+    for value in values:
+        if not value or value.startswith("data:") or value.startswith("blob:"):
+            continue
+        return strip_fragment(normalize_url(value, page_url))
+    return None
+
+
 def infer_media_kind(url: str, hint: str = "") -> str:
     parsed_path = urlparse(url).path.lower()
     if "/attachments/" in parsed_path:
@@ -290,41 +350,90 @@ def infer_media_kind(url: str, hint: str = "") -> str:
 
 
 def extract_media_candidates(html_text: str, page_url: str, allow_external: bool = False) -> list[MediaCandidate]:
-    """Collect attachment, inline image, lazy image, and direct media URLs.
+    """Collect preview URLs plus static hints for full-size media.
 
-    This only returns candidate URLs. Downloading is a separate explicit step so
-    agents can present a dry-run list and request confirmation first.
+    The thread HTML often contains thumbnails while the parent anchor, srcset, or
+    attachment link points at the full-size asset. This function records both:
+    ``url`` remains the preview/current URL unless a later resolver upgrades it,
+    while ``full_url`` and ``alternates`` preserve obvious full-size candidates.
     """
     soup = soup_from_html(html_text)
-    seen: set[str] = set()
+    seen: set[tuple[str, str | None, str | None]] = set()
     media: list[MediaCandidate] = []
 
-    def add(raw_url: str | None, kind_hint: str = "", text: str | None = None) -> None:
-        # Ignore embedded/browser-only URLs; only network-fetchable URLs are useful.
+    def add_candidate(
+        raw_url: str | None,
+        kind_hint: str = "",
+        text: str | None = None,
+        preview_url: str | None = None,
+        full_url: str | None = None,
+        alternates: list[str] | None = None,
+        resolution_method: str | None = None,
+    ) -> None:
         if not raw_url or raw_url.startswith("data:") or raw_url.startswith("blob:"):
             return
         absolute = strip_fragment(normalize_url(raw_url, page_url))
-        if absolute in seen or not allowed_host(absolute, allow_external=allow_external):
+        normalized_preview = strip_fragment(normalize_url(preview_url, page_url)) if preview_url else None
+        normalized_full = strip_fragment(normalize_url(full_url, page_url)) if full_url else None
+        normalized_alternates = [strip_fragment(normalize_url(item, page_url)) for item in alternates or [] if item]
+        if not allowed_host(absolute, allow_external=allow_external):
             return
-        path = urlparse(absolute).path.lower()
-        # Keep extraction narrow: attachments or known media extensions only.
-        if "/attachments/" not in path and not path.endswith(MEDIA_EXTENSIONS):
+        if normalized_full and not allowed_host(normalized_full, allow_external=allow_external):
+            normalized_full = None
+        normalized_alternates = [item for item in normalized_alternates if allowed_host(item, allow_external=allow_external)]
+        if not is_media_url(absolute) and not (normalized_full and is_media_url(normalized_full)) and not any(is_media_url(item) for item in normalized_alternates):
             return
-        seen.add(absolute)
-        media.append(MediaCandidate(url=absolute, kind=infer_media_kind(absolute, kind_hint), source_page=page_url, text=text))
+        key = (absolute, normalized_preview, normalized_full)
+        if key in seen:
+            return
+        seen.add(key)
+        resolved = bool(normalized_full and normalized_full != absolute and not is_probable_thumbnail_url(normalized_full))
+        media.append(
+            MediaCandidate(
+                url=absolute,
+                kind=infer_media_kind(normalized_full or absolute, kind_hint),
+                source_page=page_url,
+                text=text,
+                preview_url=normalized_preview,
+                full_url=normalized_full,
+                resolution_status="static_hint" if resolved else "unresolved",
+                resolution_method=resolution_method,
+                requires_auth=False,
+                alternates=[item for item in normalized_alternates if item not in {absolute, normalized_preview, normalized_full}],
+            )
+        )
 
     for img in soup.select("img"):
-        for attr in ["src", "data-src", "data-url", "data-original", "data-lazy-src"]:
-            add(img.get(attr), "image", img.get("alt"))
-        srcset = img.get("srcset") or img.get("data-srcset")
-        if srcset:
-            for part in srcset.split(","):
-                add(part.strip().split(" ")[0], "image", img.get("alt"))
+        preview = first_present_url(
+            [img.get(attr) for attr in ["src", "data-src", "data-url", "data-original", "data-lazy-src"]],
+            page_url,
+        )
+        srcset_urls = srcset_candidates(img.get("srcset") or img.get("data-srcset"), page_url)
+        parent = img.find_parent("a", href=True)
+        parent_url = strip_fragment(normalize_url(parent.get("href"), page_url)) if parent else None
+        static_full = None
+        if parent_url and is_media_url(parent_url):
+            static_full = parent_url
+        elif srcset_urls:
+            static_full = srcset_urls[-1]
+        if preview:
+            add_candidate(
+                preview,
+                "image",
+                img.get("alt"),
+                preview_url=preview,
+                full_url=static_full if static_full != preview else None,
+                alternates=srcset_urls,
+                resolution_method="static_html" if static_full and static_full != preview else None,
+            )
+        elif static_full:
+            add_candidate(static_full, "image", img.get("alt"), full_url=static_full, alternates=srcset_urls, resolution_method="static_html")
 
     for link in soup.select("a[href]"):
         href = link.get("href")
         text = " ".join(link.get_text(" ", strip=True).split()) or None
-        add(href, "attachment" if href and "/attachments/" in href else "media", text)
+        if href:
+            add_candidate(href, "attachment" if "/attachments/" in href else "media", text, full_url=href, resolution_method="static_html")
 
     return media
 
@@ -396,6 +505,223 @@ def bounded_search(url: str, storage_state: Path, allow_external: bool = False, 
         return payload
 
 
+def choose_best_full_url(candidate: MediaCandidate, allow_external: bool = False) -> str | None:
+    """Choose the best already-known full-size URL from static HTML hints."""
+    options = [candidate.full_url, *candidate.alternates, candidate.url]
+    filtered: list[str] = []
+    for option in options:
+        if not option or option in filtered:
+            continue
+        if allowed_host(option, allow_external=allow_external) and is_media_url(option):
+            filtered.append(option)
+    if not filtered:
+        return None
+    non_thumbs = [option for option in filtered if not is_probable_thumbnail_url(option)]
+    return (non_thumbs or filtered)[-1]
+
+
+def apply_resolved_url(candidate: MediaCandidate, full_url: str, method: str, requires_auth: bool = False) -> None:
+    """Update a media candidate in-place while preserving the preview URL."""
+    if not candidate.preview_url and candidate.url != full_url:
+        candidate.preview_url = candidate.url
+    candidate.full_url = full_url
+    candidate.url = full_url
+    candidate.resolution_status = "resolved"
+    candidate.resolution_method = method
+    candidate.requires_auth = candidate.requires_auth or requires_auth
+
+
+def resolve_static_full_size(media: list[MediaCandidate], allow_external: bool = False) -> dict[str, Any]:
+    """Resolve full-size URLs using only attributes already present in HTML."""
+    report = {"method": "static", "resolved": 0, "unresolved": 0, "errors": []}
+    for candidate in media:
+        full_url = choose_best_full_url(candidate, allow_external=allow_external)
+        if full_url and (full_url != candidate.url or candidate.resolution_status == "static_hint" or not is_probable_thumbnail_url(full_url)):
+            apply_resolved_url(candidate, full_url, "static_html", requires_auth=False)
+            report["resolved"] += 1
+        else:
+            candidate.resolution_status = candidate.resolution_status or "unresolved"
+            report["unresolved"] += 1
+    return report
+
+
+def extract_full_url_from_html(html_text: str, page_url: str, allow_external: bool = False) -> str | None:
+    """Find likely full-size media URL inside an attachment/lightbox HTML page."""
+    soup = soup_from_html(html_text)
+    options: list[str] = []
+    for meta_selector in ["meta[property='og:image']", "meta[name='twitter:image']"]:
+        meta = soup.select_one(meta_selector)
+        if meta and meta.get("content"):
+            options.append(strip_fragment(normalize_url(meta.get("content"), page_url)))
+    for img in soup.select("img"):
+        options.extend(srcset_candidates(img.get("srcset") or img.get("data-srcset"), page_url))
+        value = first_present_url([img.get(attr) for attr in ["data-original", "data-src", "data-url", "src"]], page_url)
+        if value:
+            options.append(value)
+    for link in soup.select("a[href]"):
+        href = strip_fragment(normalize_url(link.get("href"), page_url))
+        if is_media_url(href):
+            options.append(href)
+    allowed = [url for url in options if allowed_host(url, allow_external=allow_external) and is_media_url(url)]
+    non_thumbs = [url for url in allowed if not is_probable_thumbnail_url(url)]
+    return (non_thumbs or allowed or [None])[-1]
+
+
+def resolve_http_full_size(
+    media: list[MediaCandidate],
+    storage_state: Path = DEFAULT_STORAGE_STATE,
+    require_auth: bool = False,
+    allow_external: bool = False,
+    max_media: int | None = None,
+) -> dict[str, Any]:
+    """Resolve full-size URLs by requesting attachment/lightbox URLs with httpx."""
+    report = {"method": "http", "resolved": 0, "unresolved": 0, "errors": []}
+    selected = media[:max_media] if max_media else media
+    with make_http_client(storage_state, timeout=45.0, require_auth=require_auth) as client:
+        for candidate in selected:
+            probe_url = candidate.full_url or choose_best_full_url(candidate, allow_external=allow_external) or candidate.url
+            if not probe_url:
+                report["unresolved"] += 1
+                continue
+            try:
+                response = client.get(probe_url, headers={"Referer": candidate.source_page, "Accept": "image/*,text/html,*/*;q=0.8"})
+            except Exception as exc:
+                report["errors"].append({"url": probe_url, "status": f"http_error: {exc}"})
+                report["unresolved"] += 1
+                continue
+            content_type = response.headers.get("content-type", "").lower()
+            if response.status_code in BLOCK_STATUS_CODES or response.status_code >= 500:
+                candidate.requires_auth = True
+                report["errors"].append({"url": probe_url, "status": f"http_{response.status_code}"})
+                report["unresolved"] += 1
+                continue
+            if content_type.startswith("image/") or content_type.startswith("video/"):
+                apply_resolved_url(candidate, str(response.url), "authenticated_http" if require_auth else "http", requires_auth=require_auth)
+                report["resolved"] += 1
+                continue
+            ok, status = classify_response(response)
+            if not ok:
+                if status == "login_required_or_session_expired":
+                    candidate.requires_auth = True
+                report["errors"].append({"url": probe_url, "status": status})
+                report["unresolved"] += 1
+                continue
+            full_url = extract_full_url_from_html(response.text, str(response.url), allow_external=allow_external)
+            if full_url:
+                apply_resolved_url(candidate, full_url, "authenticated_http" if require_auth else "http", requires_auth=require_auth)
+                report["resolved"] += 1
+            else:
+                report["unresolved"] += 1
+    return report
+
+
+async def resolve_browser_full_size_async(
+    media: list[MediaCandidate],
+    storage_state: Path = DEFAULT_STORAGE_STATE,
+    allow_external: bool = False,
+    max_media: int | None = None,
+    timeout_ms: int = 8000,
+) -> dict[str, Any]:
+    """Resolve full-size URLs by opening pages and clicking preview images."""
+    load_storage_state(storage_state, require_auth=True)
+    playwright_api = import_dependency(
+        "playwright.async_api",
+        "Install Playwright browser deps: pip install -r scripts/requirements.txt && playwright install chromium && playwright install-deps chromium",
+    )
+    selected = media[:max_media] if max_media else media
+    report = {"method": "browser", "resolved": 0, "unresolved": 0, "errors": []}
+    async with playwright_api.async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(storage_state=str(storage_state), user_agent=USER_AGENT)
+        page = await context.new_page()
+        for candidate in selected:
+            try:
+                await page.goto(candidate.source_page, wait_until="domcontentloaded", timeout=timeout_ms)
+                basename = Path(urlparse(candidate.preview_url or candidate.url).path).name
+                selectors = []
+                if basename:
+                    selectors.append(f"img[src*='{basename}']")
+                if candidate.text:
+                    safe_alt = candidate.text.replace("'", "\\'")[:80]
+                    selectors.append(f"img[alt*='{safe_alt}']")
+                clicked = False
+                before = {strip_fragment(url) for url in await page.eval_on_selector_all("img", "imgs => imgs.map(img => img.currentSrc || img.src).filter(Boolean)")}
+                for selector in selectors or ["img"]:
+                    locator = page.locator(selector).first
+                    try:
+                        await locator.wait_for(state="visible", timeout=timeout_ms)
+                        await locator.click(timeout=timeout_ms)
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
+                if not clicked:
+                    report["unresolved"] += 1
+                    report["errors"].append({"url": candidate.url, "status": "preview_not_found"})
+                    continue
+                await page.wait_for_timeout(min(timeout_ms, 3000))
+                after = [strip_fragment(url) for url in await page.eval_on_selector_all("img", "imgs => imgs.map(img => img.currentSrc || img.src).filter(Boolean)")]
+                options = [normalize_url(url, str(page.url)) for url in after if strip_fragment(url) not in before]
+                options.extend([normalize_url(url, str(page.url)) for url in after])
+                allowed = [url for url in options if allowed_host(url, allow_external=allow_external) and is_media_url(url)]
+                non_thumbs = [url for url in allowed if not is_probable_thumbnail_url(url) and url != candidate.preview_url]
+                full_url = (non_thumbs or allowed or [None])[-1]
+                if full_url:
+                    apply_resolved_url(candidate, full_url, "playwright_click", requires_auth=True)
+                    report["resolved"] += 1
+                else:
+                    report["unresolved"] += 1
+                await page.keyboard.press("Escape")
+            except Exception as exc:
+                report["unresolved"] += 1
+                report["errors"].append({"url": candidate.url, "status": f"browser_error: {exc}"})
+        await browser.close()
+    return report
+
+
+def resolve_browser_full_size(
+    media: list[MediaCandidate],
+    storage_state: Path = DEFAULT_STORAGE_STATE,
+    allow_external: bool = False,
+    max_media: int | None = None,
+    timeout_ms: int = 8000,
+) -> dict[str, Any]:
+    """Synchronous wrapper for the Playwright click resolver."""
+    return run_async(resolve_browser_full_size_async(media, storage_state, allow_external, max_media, timeout_ms))
+
+
+def resolve_full_size_media(
+    media: list[MediaCandidate],
+    method: str = "static",
+    storage_state: Path = DEFAULT_STORAGE_STATE,
+    require_auth: bool = False,
+    allow_external: bool = False,
+    max_media: int | None = None,
+    timeout_ms: int = 8000,
+) -> dict[str, Any]:
+    """Resolve candidates to full-size media using static, HTTP, browser, or auto mode."""
+    report: dict[str, Any] = {"method": method, "steps": [], "resolved": 0, "unresolved": 0, "errors": []}
+    methods = ["static", "http"] if method == "auto" else [method]
+    if method == "auto" and require_auth:
+        methods.append("browser")
+    for step in methods:
+        if step == "static":
+            step_report = resolve_static_full_size(media, allow_external=allow_external)
+        elif step == "http":
+            unresolved = [item for item in media if item.resolution_status != "resolved"]
+            step_report = resolve_http_full_size(unresolved, storage_state, require_auth, allow_external, max_media)
+        elif step == "browser":
+            unresolved = [item for item in media if item.resolution_status != "resolved"]
+            step_report = resolve_browser_full_size(unresolved, storage_state, allow_external, max_media, timeout_ms)
+        else:
+            raise SystemExit(f"Unknown full-size resolver method: {step}")
+        report["steps"].append(step_report)
+    report["resolved"] = sum(1 for item in media if item.resolution_status == "resolved")
+    report["unresolved"] = sum(1 for item in media if item.resolution_status != "resolved")
+    report["errors"] = [error for step in report["steps"] for error in step.get("errors", [])]
+    return report
+
+
 def download_media(
     media: list[MediaCandidate],
     output_dir: Path = DEFAULT_DOWNLOAD_DIR,
@@ -422,22 +748,24 @@ def download_media(
         for index, item in enumerate(selected, start=1):
             if index > 1 and delay > 0:
                 time.sleep(delay)
+            download_url = item.full_url if item.full_url and item.resolution_status == "resolved" else item.url
+            download_source = "full_url" if item.full_url and item.resolution_status == "resolved" else ("preview_url" if item.preview_url and item.url == item.preview_url else "url")
             try:
-                with client.stream("GET", item.url, headers={"Referer": item.source_page or referer, "Accept": "*/*"}) as response:
+                with client.stream("GET", download_url, headers={"Referer": item.source_page or referer, "Accept": "*/*"}) as response:
                     content_type = response.headers.get("content-type", "")
                     # Stop on the first blocked/error response instead of retrying aggressively.
                     if response.status_code in BLOCK_STATUS_CODES or response.status_code >= 400:
                         manifest["ok"] = False
-                        manifest["errors"].append({"url": item.url, "status": f"http_{response.status_code}"})
+                        manifest["errors"].append({"url": download_url, "status": f"http_{response.status_code}"})
                         break
                     # Media URLs that return HTML usually mean a login page, challenge,
                     # or intermediate viewer rather than the file itself.
                     if "text/html" in content_type.lower():
                         manifest["ok"] = False
-                        manifest["errors"].append({"url": item.url, "status": "unexpected_html_instead_of_media"})
+                        manifest["errors"].append({"url": download_url, "status": "unexpected_html_instead_of_media"})
                         break
-                    extension = extension_from_response(item.url, content_type)
-                    stem = f"{index:05d}-{sanitize_slug(Path(urlparse(item.url).path).stem, 'media')}"
+                    extension = extension_from_response(download_url, content_type)
+                    stem = f"{index:05d}-{sanitize_slug(Path(urlparse(download_url).path).stem, 'media')}"
                     path = output_dir / f"{stem}{extension}"
                     digest = hashlib.sha256()
                     bytes_written = 0
@@ -455,11 +783,17 @@ def download_media(
                             "sha256": digest.hexdigest(),
                             "bytes": bytes_written,
                             "content_type": content_type,
+                            "content_length": response.headers.get("content-length"),
+                            "preview_url": item.preview_url,
+                            "full_url": item.full_url,
+                            "resolution_status": item.resolution_status,
+                            "resolution_method": item.resolution_method,
+                            "download_source": download_source,
                         }
                     )
             except httpx.HTTPError as exc:
                 manifest["ok"] = False
-                manifest["errors"].append({"url": item.url, "status": f"http_error: {exc}"})
+                manifest["errors"].append({"url": download_url, "status": f"http_error: {exc}"})
                 break
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

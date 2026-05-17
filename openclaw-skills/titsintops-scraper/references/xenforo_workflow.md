@@ -27,6 +27,15 @@ Stop rather than retry aggressively when responses indicate:
 - Cloudflare/challenge text or CAPTCHA markers
 - redirects away from the requested allowed host
 
+
+## Full-size media workflow
+
+1. Start with `--resolve-full --full-method static` to use parent `<a href>`, `srcset`, and lazy attributes from the thread HTML.
+2. If static output still shows `resolution_status` other than `resolved`, try `--full-method http --require-auth` after a manual `login.py` session.
+3. If full-size media appears only after clicking a preview, use `--full-method browser --require-auth`; this is a Playwright click/lightbox fallback, not a CAPTCHA or access-control bypass.
+4. Review JSON fields before download: `preview_url`, `full_url`, `resolution_status`, `resolution_method`, and downloader `download_source`.
+5. Expected unresolved states include login-required responses, challenge/CAPTCHA pages, timeout waiting for a lightbox, or preview-only markup with no full-size URL.
+
 ## Parser update checklist
 
 When changing endpoint or parser logic:
